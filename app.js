@@ -4,8 +4,12 @@ var path = require('path');
 var cookieParser = require('cookie-parser');
 var logger = require('morgan');
 
+const mongoConnection = require('./config/mongodb-connection')
+
 var indexRouter = require('./routes/index');
 var usersRouter = require('./routes/users');
+
+mongoConnection(process.env.NODE_ENV);
 
 var app = express();
 
