@@ -3,12 +3,16 @@ const sgMail     = require('@sendgrid/mail')
 const jwt        = require('jsonwebtoken')
 const mongoose   = require('mongoose')
 const shortid    = require('shortid')
+const ip         = require('ip')
+const moment     = require('moment-timezone')
 
 const {
-  Users
+  Users,
+  Auth
 } = require('./models')
 
 sgMail.setApiKey(process.env.sendgridAPIKey)
+const now    = moment().tz("Asia/Jakarta").format("YYYY-MM-DD HH:mm:ss")
 
 const { 
   success_OK, 
@@ -83,9 +87,11 @@ exports.registerUser = async body => {
       phonenumber: payload.phonenumber,
       password: hashingPassword,
       referral_code: shortid.generate(),
-      device_info: payload.device_info,
+      role: "Regular User",
       places: payload.places,
-      uuid: "12345"
+      settings: {
+        language: !payload.language ? 'id' : payload.language
+      }
     })
 
     const sendVerificationEmail = async () => {
@@ -132,4 +138,96 @@ exports.registerUser = async body => {
     .catch(error => {
       return error
     })
+}
+
+exports.login = async body => {
+  const AuthModel = await mongoose.model('auths', Auth)
+  const UsersModel = await mongoose.model('users', Users)
+
+  const LOGIN = data => {
+    let promise = new Promise(function(resolve, reject) {
+      const checkValidation = () => {
+        switch (true) {
+          case !data.email:
+            reject(client_error_not_allowed('Email or Username is required.'))
+            break;
+          case !data.password:
+            reject(client_error_not_allowed('Password is required.'))
+            break;
+          default:
+            async function checkAccount() {
+              let dataPayload = await UsersModel.findOne({ "email": data.email })
+                .then(response => {
+                  return response
+                })
+                .catch(err => err)
+              
+              let comparePassword = bcrypt.compareSync(data.password, dataPayload.password)
+
+              if(dataPayload && dataPayload.is_verified_email == true && comparePassword) {
+                resolve(dataPayload)
+              } else if(dataPayload && dataPayload.is_verified_email == false && comparePassword) {
+                return reject(client_error_bad_request('Your account is not activated Please verify your email to activate the account.'))
+              } else {
+                return reject(client_error_not_acceptable('Invalid email or password.'))
+              }
+            }
+
+            checkAccount()
+            break;
+        }
+      }
+
+      return checkValidation()
+    })
+
+    return promise
+  }
+
+  const sessionAuth = async (data, payload) => {
+    const secretKey = process.env.secretKey
+
+    const deleteOldSessionLogin = async () => {
+      let existingDevice = await AuthModel.deleteMany({ "device_info.device_id": data.device_info.device_id })
+        .then(response => {
+          return response
+        })
+      console.log(`Delete: ${existingDevice.deletedCount} login session with same device and email.`)
+      return existingDevice
+    }
+
+    await deleteOldSessionLogin()
+
+    const newAuth = await new AuthModel({
+      user_id: payload._id,
+      device_info: data.device_info,
+      login_ip_location: ip.address(),
+      is_logged_in: false,
+      created_at: now,
+      updated_at: now
+    })
+
+    let token = await jwt.sign(
+      { user_id: payload._id, email: payload.email },
+      secretKey,
+      { expiresIn: "360d" }
+    )
+
+    await newAuth.save()
+
+    return token
+  }
+
+  return LOGIN(body)
+  .then(response => {
+    let token = sessionAuth(body, response)
+    return token
+  })
+  .then(response => {
+    return success_accepted('Success login', { access_token: response })
+  })
+  .catch(error => {
+    console.log(error)
+    return error
+  })
 }
